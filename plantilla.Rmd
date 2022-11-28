@@ -1,0 +1,257 @@
+---
+title: 'Factura de Electricidad'
+output:
+  html_document:
+    theme: united
+  pdf_document: default
+params: 
+  cliente: !r list(id=1, nombre = "Paco", cups = "ES0031311729937011HG1G", potencia_contratada = 3.4, nif="17456888J", direccion= "Calle Panamá 23, 5º B",cp = "50002",
+   localidad="Zaragoza")
+  inicio_factura: "2016-05-01"
+  fin_factura: "2016-05-31"
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, error = FALSE, warning = FALSE)
+
+```
+
+```{r}
+cliente = params$cliente
+inicio_factura = params$inicio_factura
+fin_factura = params$fin_factura
+```
+
+
+```{r datos_tarifas}
+# Datos de tarifas eléctricas
+precio_potencia_kw_anual=38.043426
+precio_comercializacion_kw_anual=3.113
+tasa_impuesto_electr = 0.0511269632
+precio_alquiler_dia <- 0.026666 
+tasa_iva = 0.21
+```
+
+```{r datos_cliente}
+# Datos del cliente y contrato
+nombre=cliente$nombre
+cups=cliente$cups
+potencia_contratada=cliente$potencia_contratada
+nif=cliente$nif
+direccion=cliente$direccion
+cp=cliente$cp
+localidad = cliente$localidad
+#inicio_factura="2016-12-01"
+#fin_factura="2016-12-31"
+dias_factura=as.integer(as.Date(fin_factura)-as.Date(inicio_factura)) +1
+```
+
+<!--
+Esto es un comentario en HTML
+Los usaremos para daros indicaciones para el ejercicio
+-->
+
+
+<!--
+Ahora mostramos los datos del cliente y el contrato.
+Lo hacemos mediante una tabla en HTML para que dar formato a dos columnas:
+a la izquierda el logotipo y a la derecha una tabla con los datos de cliente/contrato/factura
+-->
+
+<table>
+<tr>
+  <td>![](img/master_luz.jpg)</td>
+  <td> &nbsp;&nbsp;&nbsp;&nbsp;  </td>
+  <td>
+
+<!--
+Insertamos una tabla escrita en Markdown con trozos de código en linea
+El []() es un truco para que la cabecera de la tabla esté vacia
+Esta os la proporcionamos completa a modo de ejemplo
+-->
+  
+  []()                          |
+  ------------------------------|-----------------         
+  Titular Contrato              |`r nombre`
+  NIF                           |`r nif` 
+  Dirección suministro          |`r direccion`
+  Localidad                     |`r cp` - `r localidad`
+  Código de suministro (CUPS)   |`r cups`
+  </td>
+</tr>
+</table>
+
+# Información del consumo eléctrico
+
+```{r}
+# Cargo datos
+consumo <- read.delim(paste0("consumo_cliente_",cliente$id,".csv"), sep=";",header = TRUE, stringsAsFactors =  FALSE)
+# Transformo el campo de fecha-hora
+consumo <- consumo %>%  mutate(ts_dato=as.POSIXct(ts_dato,tz="UTC"))
+# Selecciono datos del periodo de facturación
+consumo_fact = consumo %>% filter(ts_dato>=inicio_factura,as.Date(ts_dato)<=fin_factura)
+```
+
+<!--
+Inserto una tabla resumen del consumo en el periodo
+-->
+
+[]()                          |
+------------------------------|-----------------         
+Inicio periodo de facturación    |`r inicio_factura`
+Fin periodo de facturación       |`r fin_factura` 
+Consumo (kWh) |`r round(sum(consumo_fact$consumo_kwh),1)`
+
+
+Evolución del consumo
+
+<!--
+Inserto una gráfico de barras que muestre el consumo histórico disponible hasta la fecha de facturacion
+Eje x -- meses // Eje y -- Suma de consumo mensual
+Podremos la barra del periodo de facturación destacada en un color distinto. 
+También pondemos una linea horizontal con el consumo medio mensual
+-->
+
+
+```{r grafico_consumo, out.width="70%",fig.asp=0.62,fig.align="center"}
+cons_mes <- consumo %>%  filter(as.Date(ts_dato)<=fin_factura) %>% 
+  group_by(mes=format(ts_dato,"%Y-%m")) %>% summarise(nh=n(),consumo_kwh =sum(consumo_kwh,na.rm=TRUE))
+cons_mes <- cons_mes %>% mutate(actual=ifelse(mes==format(as.Date(inicio_factura),"%Y-%m"),TRUE,FALSE))
+cons_mean = mean(consumo$consumo_kwh)*30*24
+
+ggplot(cons_mes) + geom_bar(aes(mes,consumo_kwh,fill=actual),stat="identity") + 
+  geom_hline(aes(yintercept=cons_mean),color="red") +  
+  theme_bw() +theme(legend.position = 'none') +
+  scale_fill_manual(values=c("grey","cyan")) +
+  labs(x="",y="Consumo mensual (kWh") 
+
+```
+
+
+# Detalle de la factura
+
+<!--
+Os dejamos el texto con la indicación de las cantidades que teneis  que ir rellenando mesiante trozon de código en linea
+-->
+## Facturación por potencia contratada
+
+```{r}
+# Calculo los importes por la parte de potencia
+importe_potencia = potencia_contratada*precio_potencia_kw_anual*dias_factura/365
+importe_comercializacion=potencia_contratada*precio_comercializacion_kw_anual*dias_factura/365
+```
+
+Importe por peaje de acceso:
+
+`r potencia_contratada` kW x `r precio_potencia_kw_anual` Eur/kW y año x (`r dias_factura`/365) días =  `r round(importe_potencia,2)` Euros
+
+Importe del término fijo de los costes de comercialización:
+
+`r potencia_contratada` kW x `r precio_comercializacion_kw_anual` Eur/kW y año x (`r dias_factura`/365) días =  `r round(importe_comercializacion,2)` Euros
+
+## Facturación por energia consumida
+
+```{r}
+# Para calcular el coste de la energia cargo un fichero con el precio horario del PVPC (Precio voluntario del pequeño consumidor)
+# El coste de la energia se calculará multiplicando hora a hora del periodo el consumo por el precio pvpc y sumando el resultado a todas las horas que componen el periodo de facturación
+
+pvpc <- read.delim("pvpc2016.csv",sep=";")
+pvpc <-pvpc %>%  mutate(ts_dato=as.POSIXct(ts_dato,tz="UTC"))
+consumo <- merge(consumo,pvpc,by="ts_dato")
+consumo <-consumo %>% mutate(importe=consumo_kwh*precio_kwh)
+
+consumo_fact <- consumo %>% filter(ts_dato>=inicio_factura,as.Date(ts_dato)<=fin_factura) %>% 
+  summarise(consumo_kwh=sum(consumo_kwh),importe=sum(importe),precio_kwh = importe/consumo_kwh)
+```
+
+Importe por coste de la energía (*):
+
+`r consumo_fact$consumo_kwh` Kwh $\times$ `r consumo_fact$precio_kwh` = `r consumo_fact$importe` Euros
+
+(*) Calculado segun lectura horaria de contador y precio PVPC calculado según Real Decreto RD 216/2014
+
+```{r}
+subtotal_pot <- importe_potencia +importe_comercializacion
+subtotal_pot_ener <- consumo_fact$importe + subtotal_pot
+```
+<!-- 
+Calculo el subtotal de energia y potencia, ya que sobre el se aplica el impuesto de electricidad
+-->
+
+__Subtotal Energia = `r round(subtotal_pot_ener,2)` Euros__
+
+----------------------------------------------------
+
+## Otros conceptos
+
+<!-- 
+Calculamos 
+impuesto de electricidad 
+alquiler de equipos
+-->
+```{r}
+impuesto_electr <- subtotal_pot_ener * tasa_impuesto_electr
+alquiler <- precio_alquiler_dia * dias_factura
+subtotal_otros <- impuesto_electr + alquiler 
+```
+
+Impuesto de electricidad: 
+
+Impuesto especial al tipo del `r tasa_impuesto_electr*100` % sobre la facturación de la electricidad suministrada = 
+`r impuesto_electr` Euros
+
+Alquiler de equipos de medida y control. Precio establecido que se paga por el alquiler de equipos de medida y control.
+
+Alquiler equipos de medida y control (`r dias_factura` días x `r precio_alquiler_dia` Eur/día) = `r alquiler` Euros
+
+<!-- 
+Calculamos el subtotal de otros conceptos
+-->
+
+__Subtotal Otros Conceptos = `r round(subtotal_otros,2)` Euros__
+
+----------------------------------------------------
+
+<!-- 
+La suma de los subtotales de potencia y energia y el de otros conceptas nos 
+proporciona el total de la factura sin IVA
+-->
+
+```{r}
+importe_total = subtotal_pot_ener + subtotal_otros
+```
+
+**IMPORTE TOTAL = `r round(importe_total,2)` Euros**
+
+```{r}
+iva = tasa_iva*importe_total
+importe_total_iva <- importe_total + iva
+```
+
+<!-- 
+Finalmente calculo el IVA y el importe total
+-->
+
+
+IVA: Impuesto sobre el Valor Añadido al tipo del `r round(100*tasa_iva,1)` %  =  `r round(iva,2)` Euros 
+
+**IMPORTE TOTAL  FACTURA = `r round(importe_total_iva,2)` Euros**
+
+
+# Resumen Factura
+
+<!-- 
+Tabla con el resumen de todos los conceptos de la factura
+-->
+
+[]()                                        |
+--------------------------------------------|-----------------         
+Por potencia contratada | `r round(subtotal_pot,2)` €
+Por energía consumida | `r round(consumo_fact$importe,2)` €
+Impuesto electricidad | `r round(impuesto_electr,2)` €
+Alquiler equipos de medida | `r round(alquiler,2)` €
+IVA    |`r round(iva,2)` €
+--------------------------------------------|-----------------         
+**TOTAL IMPORTE FACTURA** |  **`r round(importe_total_iva,2)`€**
